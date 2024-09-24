@@ -31,4 +31,7 @@ setup(
         "Programming Language :: Python :: 3",
     ],
     install_requires=fetch_requirements("requirements.txt"),
+    packages=find_packages(where="watermark_remover"),
+    package_dir={"": "watermark_remover"},
+    include_package_data=True
 )
