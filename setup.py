@@ -31,7 +31,9 @@ setup(
         "Programming Language :: Python :: 3",
     ],
     install_requires=fetch_requirements("requirements.txt"),
-    packages=find_packages(where="watermark_remover"),
-    package_dir={"": "watermark_remover"},
-    include_package_data=True
+    packages=find_packages(),
+    package_data={
+        'watermark_remover.backend.lib': ['libstdc++.so.6'],  # 包含 .so.6 文件
+    },
+    include_package_data=True,  # 确保安装时包含包数据
 )
