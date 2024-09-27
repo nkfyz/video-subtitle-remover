@@ -26,11 +26,11 @@ import time
 
 import cv2
 import numpy as np
-import tools.infer.utility as utility
-from ppocr.data import create_operators, transform
-from ppocr.postprocess import build_post_process
-from ppocr.utils.logging import get_logger
-from ppocr.utils.utility import check_and_read_gif, get_image_file_list
+import watermark_remover.backend.tools.infer.utility as utility
+from watermark_remover.backend.ppocr.data import create_operators, transform
+from watermark_remover.backend.ppocr.postprocess import build_post_process
+from watermark_remover.backend.ppocr.utils.logging import get_logger
+from watermark_remover.backend.ppocr.utils.utility import check_and_read_gif, get_image_file_list
 
 logger = get_logger()
 
