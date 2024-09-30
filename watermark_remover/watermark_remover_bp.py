@@ -32,8 +32,13 @@ class SubtitleDetect:
     文本框检测类，用于检测视频帧中是否存在文本框
     """
 
-    def __init__(self, video_path, text_detector, sub_area=None):
-        self.text_detector = text_detector
+    def __init__(self, video_path, sub_area=None):
+        # 获取参数对象
+        importlib.reload(config)
+        args = utility.parse_args()
+        args.det_algorithm = "DB"
+        args.det_model_dir = DET_MODEL_PATH
+        self.text_detector = TextDetector(args)
         self.video_path = video_path
         self.sub_area = sub_area
 
@@ -508,27 +513,14 @@ class SubtitleDetect:
 
 
 class SubtitleRemover:
-    def __init__(self,
-                 vd_path,
-                 lama_inpaint,
-                 sttn_inpaint,
-                 text_decoder,
-                 sub_area=None,
-                 watermark_detection=True,
-                 ):
+    def __init__(self, vd_path, sub_area=None, gui_mode=False):
         importlib.reload(config)
         # 线程锁
         # self.lock = threading.RLock()
-        
-        # Init models
-        self.lama_inpaint = lama_inpaint
-        self.text_decoder = text_decoder
-        self.sttn_inpaint = sttn_inpaint
-        
-        self.watermark_detection = watermark_detection
-        
         # 用户指定的字幕区域位置
         self.sub_area = sub_area
+        # 是否为gui运行，gui运行需要显示预览
+        self.gui_mode = gui_mode
         # 判断是否为图片
         self.is_picture = False
         if is_image_file(str(vd_path)):
@@ -555,7 +547,7 @@ class SubtitleRemover:
         self.frame_height = int(self.video_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         self.frame_width = int(self.video_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         # 创建字幕检测对象
-        self.sub_detector = SubtitleDetect(self.video_path, self.text_decoder, self.sub_area)
+        self.sub_detector = SubtitleDetect(self.video_path, self.sub_area)
         # 创建视频临时对象，windows下delete=True会有permission denied的报错
         self.video_temp_file = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
         # 创建视频写对象
@@ -563,6 +555,8 @@ class SubtitleRemover:
             self.video_temp_file.name, cv2.VideoWriter_fourcc(*"mp4v"), self.fps, self.size
         )
         self.video_out_name = os.path.join(os.path.dirname(self.video_path), f"{self.vd_name}.mp4")
+        self.video_inpaint = None
+        self.lama_inpaint = None
         self.ext = os.path.splitext(vd_path)[-1]
         if self.is_picture:
             pic_dir = os.path.join(os.path.dirname(self.video_path))
@@ -623,6 +617,7 @@ class SubtitleRemover:
         continuous_frame_no_list = self.sub_detector.find_continuous_ranges_with_same_mask(sub_list)
         scene_div_points = self.sub_detector.get_scene_div_frame_no(self.video_path)
         continuous_frame_no_list = self.sub_detector.split_range_by_scene(continuous_frame_no_list, scene_div_points)
+        self.video_inpaint = VideoInpaint(config.PROPAINTER_MAX_LOAD_NUM, model_path=VIDEO_INPAINT_MODEL_PATH)
         print("[Watermark Remover] Start removing watermark.")
         index = 0
         while True:
@@ -665,6 +660,8 @@ class SubtitleRemover:
                         elif len(temp_frames) == 1:
                             inner_index += 1
                             single_mask = create_mask(self.mask_size, sub_list[index])
+                            if self.lama_inpaint is None:
+                                self.lama_inpaint = LamaInpaint(model_path=LAMA_MODEL_PATH)
                             inpainted_frame = self.lama_inpaint(frame, single_mask)
                             self.video_writer.write(inpainted_frame)
                             continue
@@ -676,6 +673,8 @@ class SubtitleRemover:
                                 # 2. 调用批推理
                                 if len(batch) == 1:
                                     single_mask = create_mask(self.mask_size, sub_list[start_frame_no])
+                                    if self.lama_inpaint is None:
+                                        self.lama_inpaint = LamaInpaint(model_path=LAMA_MODEL_PATH)
                                     inpainted_frame = self.lama_inpaint(frame, single_mask)
                                     self.video_writer.write(inpainted_frame)
                                     inner_index += 1
@@ -684,6 +683,8 @@ class SubtitleRemover:
                                     for i, inpainted_frame in enumerate(inpainted_frames):
                                         self.video_writer.write(inpainted_frame)
                                         inner_index += 1
+                                        if self.gui_mode:
+                                            self.preview_frame = cv2.hconcat([batch[i], inpainted_frame])
 
     def sttn_mode_with_no_detection(self):
         """
@@ -699,14 +700,15 @@ class SubtitleRemover:
             ymin, ymax, xmin, xmax = 0, self.frame_height, 0, self.frame_width
         mask_area_coordinates = [(xmin, xmax, ymin, ymax)]
         mask = create_mask(self.mask_size, mask_area_coordinates)
-        sttn_video_inpaint = STTNVideoInpaint(self.video_path, self.sttn_inpaint)
+        sttn_video_inpaint = STTNVideoInpaint(self.video_path, STTN_MODEL_PATH)
         sttn_video_inpaint(input_mask=mask, input_sub_remover=self)
 
     def sttn_mode(self):
         # 是否跳过字幕帧寻找
-        if not self.watermark_detection:
+        if not WATERMARK_DETECTION:
             self.sttn_mode_with_no_detection()
         else:
+            sttn_inpaint = STTNInpaint(model_path=STTN_MODEL_PATH)
             sub_list = self.sub_detector.find_subtitle_frame_no(sub_remover=self)
             continuous_frame_no_list = self.sub_detector.find_continuous_ranges_with_same_mask(sub_list)
             continuous_frame_no_list = self.sub_detector.filter_and_merge_intervals(continuous_frame_no_list)
@@ -725,6 +727,8 @@ class SubtitleRemover:
                 # 判断当前帧号是不是字幕区间开始, 如果不是，则直接写
                 if current_frame_index not in start_end_map.keys():
                     self.video_writer.write(frame)
+                    if self.gui_mode:
+                        self.preview_frame = cv2.hconcat([frame, frame])
                 # 如果是区间开始，则找到尾巴
                 else:
                     start_frame_index = current_frame_index
@@ -756,14 +760,18 @@ class SubtitleRemover:
                     for batch in batch_generator(frames_need_inpaint, config.STTN_MAX_LOAD_NUM):
                         # 2. 调用批推理
                         if len(batch) >= 1:
-                            inpainted_frames = self.sttn_inpaint(batch, mask)
+                            inpainted_frames = sttn_inpaint(batch, mask)
                             for i, inpainted_frame in enumerate(inpainted_frames):
                                 self.video_writer.write(inpainted_frame)
                                 inner_index += 1
+                                if self.gui_mode:
+                                    self.preview_frame = cv2.hconcat([batch[i], inpainted_frame])
 
     def lama_mode(self):
         print("[Watermark Remover] Use lama mode")
         sub_list = self.sub_detector.find_subtitle_frame_no(sub_remover=self)
+        if self.lama_inpaint is None:
+            self.lama_inpaint = LamaInpaint(model_path=LAMA_MODEL_PATH)
         index = 0
         print("[Watermark Remover] Start removing watermark.")
         while True:
@@ -778,6 +786,8 @@ class SubtitleRemover:
                     frame = cv2.inpaint(frame, mask, 3, cv2.INPAINT_TELEA)
                 else:
                     frame = self.lama_inpaint(frame, mask)
+            if self.gui_mode:
+                self.preview_frame = cv2.hconcat([original_frame, frame])
             if self.is_picture:
                 cv2.imencode(self.ext, frame)[1].tofile(self.video_out_name)
             else:
@@ -787,18 +797,20 @@ class SubtitleRemover:
         # 重置进度条
         if self.is_picture:
             sub_list = self.sub_detector.find_subtitle_frame_no(sub_remover=self)
+            self.lama_inpaint = LamaInpaint(model_path=LAMA_MODEL_PATH)
             original_frame = cv2.imread(self.video_path)
             if len(sub_list):
                 mask = create_mask(original_frame.shape[0:2], sub_list[1])
                 inpainted_frame = self.lama_inpaint(original_frame, mask)
             else:
                 inpainted_frame = original_frame
+            if self.gui_mode:
+                self.preview_frame = cv2.hconcat([original_frame, inpainted_frame])
             cv2.imencode(self.ext, inpainted_frame)[1].tofile(self.video_out_name)
         else:
             # 精准模式下，获取场景分割的帧号，进一步切割
             if config.MODE == config.InpaintMode.PROPAINTER:
                 self.propainter_mode()
-                pass
             elif config.MODE == config.InpaintMode.STTN:
                 self.sttn_mode()
             else:
@@ -822,7 +834,14 @@ class SubtitleRemover:
                     pass
                 else:
                     print(f"failed to delete temp file {self.video_temp_file.name}")
-                    
+
+
+LAMA_MODEL_PATH = None
+STTN_MODEL_PATH = None
+VIDEO_INPAINT_MODEL_PATH = None
+DET_MODEL_PATH = None
+WATERMARK_DETECTION = True
+
 
 class WatermarkRemover:
     def __init__(
@@ -838,48 +857,38 @@ class WatermarkRemover:
         self.video_inpaint_model_path = video_inpaint_model_path
         self.det_model_path = det_model_path
         self.watermark_detection = watermark_detection
-        
-        # check model paths
-        self._check_models()
-        
-        print('[Watermark Remover] Load models...')
-        self.lama_inpaint = LamaInpaint(model_path=self.lama_model_path) # for pic
-        self.sttn_inpaint = STTNInpaint(self.sttn_model_path)
-        self.text_detector = self._init_text_detector(self.det_model_path)
-        print('[Watermark Remover] Loaded 3 models done.')
 
-    def _check_models(self):
-        if "big-lama.pt" not in (os.listdir(self.lama_model_path)):
-            fs = Filesplit()
-            fs.merge(input_dir=self.lama_model_path)
-
-        if "inference.pdiparams" not in os.listdir(self.det_model_path):
-            fs = Filesplit()
-            fs.merge(input_dir=self.det_model_path)
-
-        if "ProPainter.pth" not in os.listdir(self.video_inpaint_model_path):
-            fs = Filesplit()
-            fs.merge(input_dir=self.video_inpaint_model_path)
-            
-    def _init_text_detector(self, det_model_path):
-        # 获取参数对象
-        importlib.reload(config)
-        args = utility.parse_args()
-        args.det_algorithm = "DB"
-        args.det_model_dir = det_model_path
-        return TextDetector(args)
-            
     def run(self, video_paths, sub_area=None):
+        global LAMA_MODEL_PATH
+        global STTN_MODEL_PATH
+        global VIDEO_INPAINT_MODEL_PATH
+        global DET_MODEL_PATH
+        global WATERMARK_DETECTION
+
+        LAMA_MODEL_PATH = self.lama_model_path
+        STTN_MODEL_PATH = self.sttn_model_path
+        VIDEO_INPAINT_MODEL_PATH = self.video_inpaint_model_path
+        DET_MODEL_PATH = self.det_model_path
+        WATERMARK_DETECTION = self.watermark_detection
+
+        self._check_models()
+
         for video_path in video_paths:
             if is_video_or_image(video_path):
-                sd = SubtitleRemover(
-                    video_path,
-                    lama_inpaint=self.lama_inpaint,
-                    text_decoder=self.text_detector,
-                    sttn_inpaint=self.sttn_inpaint,
-                    sub_area=sub_area,
-                    watermark_detection=self.watermark_detection
-                    )
+                sd = SubtitleRemover(video_path, sub_area=sub_area)
                 sd.run()
             else:
                 print(f"[Watermark Remover]Invalid video path: {video_path}")
+
+    def _check_models(self):
+        if "big-lama.pt" not in (os.listdir(LAMA_MODEL_PATH)):
+            fs = Filesplit()
+            fs.merge(input_dir=LAMA_MODEL_PATH)
+
+        if "inference.pdiparams" not in os.listdir(DET_MODEL_PATH):
+            fs = Filesplit()
+            fs.merge(input_dir=DET_MODEL_PATH)
+
+        if "ProPainter.pth" not in os.listdir(VIDEO_INPAINT_MODEL_PATH):
+            fs = Filesplit()
+            fs.merge(input_dir=VIDEO_INPAINT_MODEL_PATH)

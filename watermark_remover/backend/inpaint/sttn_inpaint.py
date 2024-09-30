@@ -237,9 +237,9 @@ class STTNVideoInpaint:
         # 返回视频读取对象、帧信息和视频写入对象
         return reader, frame_info
 
-    def __init__(self, video_path, model_path, mask_path=None, clip_gap=None):
+    def __init__(self, video_path, sttn_inpaint, mask_path=None, clip_gap=None):
         # STTNInpaint视频修复实例初始化
-        self.sttn_inpaint = STTNInpaint(model_path=model_path)
+        self.sttn_inpaint = sttn_inpaint
         # 视频和掩码路径
         self.video_path = video_path
         self.mask_path = mask_path
