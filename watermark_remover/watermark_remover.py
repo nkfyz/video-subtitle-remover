@@ -842,7 +842,7 @@ class WatermarkRemover:
         # check model paths
         self._check_models()
         
-        print('[Watermark Remover] Load models...')
+        print('[Watermark Remover] Loading models...')
         self.lama_inpaint = LamaInpaint(model_path=self.lama_model_path) # for pic
         self.sttn_inpaint = STTNInpaint(self.sttn_model_path)
         self.text_detector = self._init_text_detector(self.det_model_path)
